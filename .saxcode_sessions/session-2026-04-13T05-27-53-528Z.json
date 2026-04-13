@@ -1,0 +1,22 @@
+{
+  "id": "session-2026-04-13T05-27-53-528Z",
+  "lastUpdate": "2026-04-13T05:38:38.272Z",
+  "history": [
+    {
+      "role": "user",
+      "content": "สวัสดี SaxCode!"
+    },
+    {
+      "role": "assistant",
+      "content": "สวัสดีครับเพื่อนรัก!"
+    },
+    {
+      "role": "user",
+      "content": "hi"
+    },
+    {
+      "role": "assistant",
+      "content": "Hello! How can I help you today?"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@sax/agent-core",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "zod": "^4.3.6",
+    "zod-to-json-schema": "^3.25.2",
+    "execa": "^9.6.1",
+    "@anthropic-ai/sdk": "^0.88.0"
+  }
+}

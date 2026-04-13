@@ -1,0 +1,19 @@
+{
+  "name": "saxcode",
+  "version": "1.0.0",
+  "description": "Premium AI Coding Agent Monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bun packages/sax-cli/src/index.tsx",
+    "test": "bun test packages/**/*"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.2",
+    "@types/node": "^22.13.4",
+    "@types/react": "18"
+  }
+}
