@@ -3,10 +3,11 @@ import { useState, useEffect } from 'react';
 import { render, Text, Box, Newline, useInput, useApp } from 'ink';
 import chalk from 'chalk';
 import { ClaudeSpinner } from './ClaudeSpinner.tsx';
-import { SaxSelect, SaxOption } from './SaxSelect.tsx';
+import { SaxSelect, type SaxOption } from './SaxSelect.tsx';
+import { SwarmTracker, type SwarmTask } from './SwarmTracker.tsx';
 import { marked } from 'marked';
 import TerminalRenderer from 'marked-terminal';
-import { SaxAgent, ProviderType, McpClient, calculateCost, saveConfig, loadConfig } from '@sax/agent-core';
+import { SaxAgent, type ProviderType, McpClient, calculateCost, saveConfig, loadConfig } from '@sax/agent-core';
 import { handleSlashCommand } from './CommandHandler.ts';
 import { StatsView } from './StatsView.tsx'; // NEW!
 import fs from 'fs/promises';
@@ -62,6 +63,7 @@ export const App: React.FC<AppProps> = ({ initialPrompt, resumeId, onSessionRead
   const [showStats, setShowStats] = useState(false); // NEW!
   const [approvalRequest, setApprovalRequest] = useState<{ name: string, args: any, resolve: (val: boolean) => void } | null>(null);
   const [activeMenu, setActiveMenu] = useState<{ badge: string, question: string, options: SaxOption[] } | null>(null);
+  const [swarmTasks, setSwarmTasks] = useState<SwarmTask[]>([]);
   const [thinkingTime, setThinkingTime] = useState(0);
   const [currentReceivedTokens, setCurrentReceivedTokens] = useState(0);
   
@@ -119,7 +121,8 @@ export const App: React.FC<AppProps> = ({ initialPrompt, resumeId, onSessionRead
     '/provider': 'Switch LLM provider (anthropic, kilocode, ollama, etc.)',
     '/auto': 'Toggle autonomous mode for automatic tool approval',
     '/stats': 'Open the detailed usage statistics dashboard',
-    '/style': 'Change response style (Default, Explanatory, Learning)'
+    '/style': 'Change response style (Default, Explanatory, Learning)',
+    '/research': 'Perform a deep, multi-step web investigation on a topic'
   };
 
   useEffect(() => {
@@ -189,11 +192,18 @@ export const App: React.FC<AppProps> = ({ initialPrompt, resumeId, onSessionRead
             setActiveMenu
         };
         const wasHandled = await handleSlashCommand(processedPrompt, ctx);
-        if (wasHandled) { setUserInput(''); return; }
+        if (typeof wasHandled === 'string') {
+            // It's a macro! Override the prompt with the expanded version and let AI process it.
+            processedPrompt = wasHandled;
+        } else if (wasHandled === true) {
+            setUserInput(''); 
+            return; 
+        }
     }
 
     setIsBusy(true); setUserInput('');
     setSuggestions([]);
+    setSwarmTasks([{ id: 'init', type: 'think', status: 'running', label: 'Analyzing request...', assignee: 'Agent OS' }]);
     setThinkingTime(0);
     setCurrentReceivedTokens(0);
 
@@ -226,8 +236,30 @@ export const App: React.FC<AppProps> = ({ initialPrompt, resumeId, onSessionRead
             });
           } else { setMessages(prev => [...prev, { role, content }]); }
         },
-        (s) => setStatus(s),
-        (n, a) => setToolCall({ name: n, args: a }),
+        (s) => {
+            setStatus(s);
+            setSwarmTasks(prev => {
+                const arr = [...prev];
+                const last = arr[arr.length - 1];
+                if (last && last.type === 'think' && last.status === 'running') last.label = s;
+                return arr;
+            });
+        },
+        (n, a) => {
+            setToolCall({ name: n, args: a });
+            setSwarmTasks(prev => {
+                const newTasks = prev.map(t => t.status === 'running' ? { ...t, status: 'completed' as const } : t);
+                newTasks.push({
+                    id: Math.random().toString(),
+                    type: 'tool',
+                    status: 'running',
+                    label: `Execute Tool: ${n}`,
+                    description: `Preparing arguments...`,
+                    assignee: 'Tool Node'
+                });
+                return newTasks;
+            });
+        },
         (inT, outT) => {
             setTokens(prev => ({ input: prev.input + inT, output: prev.output + outT }));
             setCurrentReceivedTokens(prev => prev + outT);
@@ -239,9 +271,13 @@ export const App: React.FC<AppProps> = ({ initialPrompt, resumeId, onSessionRead
             }); 
         }
       );
-    } catch (e: any) { setMessages(prev => [...prev, { role: 'assistant', content: `❌ Error: ${e.message}` }]); } finally { 
+    } catch (e: any) { 
+        setMessages(prev => [...prev, { role: 'assistant', content: `❌ Error: ${e.message}` }]); 
+    } finally { 
         setIsBusy(false); setToolCall(null); setStatus('Idle'); 
         clearInterval(timer);
+        setSwarmTasks(prev => prev.map(t => ({ ...t, status: 'completed' as const })));
+        setTimeout(() => setSwarmTasks([]), 2000);
     }
   };
 
@@ -316,7 +352,7 @@ export const App: React.FC<AppProps> = ({ initialPrompt, resumeId, onSessionRead
 
             {approvalRequest && (
                 <Box flexDirection="column" padding={1} borderStyle="round" borderColor="yellow" marginY={1}>
-                <Text color="yellow" bold>⚠ Confirm Action</Text>
+                <Text color="yellow" bold>[!] Confirm Action</Text>
                 <Text>Allow AI to run <Text color="cyan" bold>{approvalRequest.name}</Text>?</Text>
                 <Box marginTop={1} borderColor="gray" borderStyle="single" paddingX={1}><Text color="gray">{JSON.stringify(approvalRequest.args, null, 2)}</Text></Box>
                 <Box marginTop={1}><Text color="green" bold>y</Text><Text> to approve, </Text><Text color="red" bold>n</Text><Text> to deny</Text></Box>
@@ -335,8 +371,12 @@ export const App: React.FC<AppProps> = ({ initialPrompt, resumeId, onSessionRead
                 />
             )}
 
-            {toolCall && !approvalRequest && (
-                <Box marginLeft={2} marginBottom={1}><Text color="cyan">⚒ </Text><Text color="gray">Executing </Text><Text color="cyan" bold>{toolCall.name}</Text></Box>
+            {toolCall && !approvalRequest && swarmTasks.length === 0 && (
+                <Box marginLeft={2} marginBottom={1}><Text color="cyan">{">>"}</Text><Text color="gray"> Executing </Text><Text color="cyan" bold>{toolCall.name}</Text></Box>
+            )}
+
+            {swarmTasks.length > 0 && !approvalRequest && (
+                <SwarmTracker tasks={swarmTasks} />
             )}
 
                 {suggestions.length > 0 && (
@@ -344,14 +384,14 @@ export const App: React.FC<AppProps> = ({ initialPrompt, resumeId, onSessionRead
                 <Box borderStyle="single" borderColor={CLAUDE_ORANGE} flexDirection="column" paddingX={1}>
                     {suggestions.map((s, i) => (
                         <Box key={i} justifyContent="flex-start">
-                            <Box width={20}>
+                            <Box width={35}>
                                 <Text color={i === selectedIndex ? 'white' : '#7dd3fc'} bold={i === selectedIndex}>
                                     {i === selectedIndex ? '❯ ' : '  '}
                                     {userInput.startsWith('/') && !userInput.includes(' ') ? '' : (userInput.includes('@') ? '@' : '')}{s.name}
                                 </Text>
                             </Box>
                             <Box flexGrow={1}>
-                                <Text color="gray" dim={i !== selectedIndex}>
+                                <Text color="gray" dimColor={i !== selectedIndex}>
                                     {s.desc}
                                 </Text>
                             </Box>
@@ -374,22 +414,22 @@ export const App: React.FC<AppProps> = ({ initialPrompt, resumeId, onSessionRead
                 <Box>
                     <Text color={CLAUDE_ORANGE} bold>❯ </Text>
                     <Text>{userInput}</Text>
-                    {userInput === '' && <Text color="gray" dim>Ask anything...</Text>}
+                    {userInput === '' && <Text color="gray" dimColor>Ask anything...</Text>}
                 </Box>
                 ) : null}
 
             <Box marginTop={2} flexDirection="column">
-                <Text color="gray" dim>────────────────────────────────────────────────────────────────────────────────</Text>
+                <Text color="gray" dimColor>────────────────────────────────────────────────────────────────────────────────</Text>
                 <Box justifyContent="space-between" paddingX={1}>
                     <Box>
-                        <Text color={isAutoApprove ? "green" : "gray"}>{isAutoApprove ? "🛡️  AUTO" : "🛡️  MANUAL"}</Text>
-                        <Text color="gray" dim> | API: </Text>
+                        <Text color={isAutoApprove ? "green" : "gray"}>{isAutoApprove ? "MODE: AUTO" : "MODE: MANUAL"}</Text>
+                        <Text color="gray" dimColor> | API: </Text>
                         <Text color="gray">{currentProvider}/{currentModel}</Text>
-                        <Text color="gray" dim> | Total Cost: </Text>
+                        <Text color="gray" dimColor> | Total Cost: </Text>
                         <Text color="yellow" bold>${sessionCost.toFixed(4)}</Text>
                     </Box>
                     <Box>
-                        <Text color="gray" dim>Session: </Text>
+                        <Text color="gray" dimColor>Session: </Text>
                         <Text color="gray">{agent?.getSessionId().slice(-8)}</Text>
                     </Box>
                 </Box>

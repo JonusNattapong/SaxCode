@@ -50,9 +50,48 @@ export const runCommand = async (command: string, input?: string) => {
 };
 
 export const grepSearch = async (dirPath: string, pattern: string) => {
-    // Basic glob-like search or just use shell grep
-    const cmd = process.platform === 'win32' ? `ls -r | sls "${pattern}"` : `grep -rn "${pattern}" "${dirPath}"`;
-    return runCommand(cmd);
+    try {
+        const targetDir = dirPath || '.';
+        const maxResults = 30;
+        let matchCount = 0;
+        const results: string[] = [];
+        
+        async function searchDir(currentPath: string) {
+            if (matchCount >= maxResults) return;
+            const entries = await fs.readdir(currentPath, { withFileTypes: true }).catch(() => []);
+            for (const entry of entries) {
+                if (matchCount >= maxResults) break;
+                // Hard skip heavy directories
+                if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist' || entry.name === 'build' || entry.name === '.next') continue;
+                
+                const fullPath = path.join(currentPath, entry.name);
+                if (entry.isDirectory()) {
+                    await searchDir(fullPath);
+                } else if (entry.isFile()) {
+                    // Skip binaries and media
+                    const ext = path.extname(entry.name).toLowerCase();
+                    if (['.exe', '.dll', '.png', '.jpg', '.jpeg', '.gif', '.mp4', '.webp', '.zip', '.tar', '.gz', '.pdf', '.woff2'].includes(ext)) continue;
+                    
+                    try {
+                        const content = await fs.readFile(fullPath, 'utf-8');
+                        const lines = content.split('\n');
+                        for (let i = 0; i < lines.length; i++) {
+                            if (lines[i].includes(pattern)) {
+                                results.push(`${fullPath}:${i + 1}:${lines[i].trim()}`);
+                                matchCount++;
+                                if (matchCount >= maxResults) break;
+                            }
+                        }
+                    } catch (e) { /* ignore unreadable files */ }
+                }
+            }
+        }
+        
+        await searchDir(targetDir);
+        return results.length > 0 ? results.join('\n') : `No matches found for "${pattern}".`;
+    } catch (e: any) {
+        return `Search Error: ${e.message}`;
+    }
 };
 
 export const replaceFileContent = async (filePath: string, target: string, replacement: string) => {

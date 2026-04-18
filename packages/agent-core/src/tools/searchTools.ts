@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { ToolDefinition } from './fsTools.ts';
+import { execa } from 'execa';
+import path from 'path';
 
 export const searchTools: ToolDefinition[] = [
   {
@@ -71,6 +73,38 @@ export const searchTools: ToolDefinition[] = [
         }
         return results.join('\n\n') || "No results found. DDG Lite structure changed or blocked.";
       } catch (err: any) { return `DuckDuckGo Error: ${err.message}`; }
+    }
+  },
+  {
+    name: 'read_web_page',
+    description: 'Converts any web page URL into clean Markdown. It uses a local stealth scraper (Scrapling) first to save cost and bypass bots, falling back to Jina API if needed.',
+    inputSchema: z.object({
+      url: z.string().describe('The full URL of the web page to read'),
+    }),
+    execute: async ({ url }) => {
+      try {
+        // Attempt 1: Stealth Local Scraper via Python (Cost: $0)
+        try {
+           const scriptPath = path.resolve('packages/agent-core/src/python-scripts/scraper.py');
+           const { stdout } = await execa('python', [scriptPath, url], { timeout: 15000 });
+           
+           if (stdout && !stdout.includes('ERROR:')) {
+               let md = stdout;
+               if (md.length > 30000) return md.slice(0, 30000) + '\n\n...(Content truncated for brevity)';
+               return md;
+           }
+        } catch (pyErr) {
+           console.log(`[Research] Local scrape failed, falling back to Jina API...`);
+        }
+
+        // Attempt 2: Fallback to Jina Reader API
+        const response = await fetch(`https://r.jina.ai/${url}`, {
+            headers: { 'Accept': 'text/event-stream' }
+        });
+        const md = await response.text();
+        if (md.length > 30000) return md.slice(0, 30000) + '\n\n...(Content truncated for brevity)';
+        return md;
+      } catch (err: any) { return `Reader Error: ${err.message}`; }
     }
   }
 ];

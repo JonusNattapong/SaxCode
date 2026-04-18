@@ -22,7 +22,11 @@ export class SaxAgent {
   private currentSessionId: string;
   private outputStyle: OutputStyle = 'default';
 
-  constructor(provider: ProviderType, apiKey?: string, model?: string, baseURL?: string) {
+  private activeCallbacks: any = null;
+  private isSubAgent: boolean = false;
+  private subAgentRole: string = '';
+
+  constructor(provider: ProviderType, apiKey?: string, model?: string, baseURL?: string, isSubAgent = false, roleName = '') {
     const config = PROVIDERS[provider] || PROVIDERS.anthropic;
     this.provider = provider;
     this.baseURL = baseURL || config.baseURL;
@@ -30,6 +34,51 @@ export class SaxAgent {
     this.apiKey = apiKey || (config.apiKeyEnv ? process.env[config.apiKeyEnv] : '') || '';
     
     this.currentSessionId = `session-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    this.isSubAgent = isSubAgent;
+    this.subAgentRole = roleName;
+    
+    // Inject Swarm Capablities (Only for Main Agent)
+    if (!this.isSubAgent) {
+        this.addExtraTool({
+            name: 'delegate_task',
+            description: 'Delegate a specific task or research node to a specialized autonomous sub-agent.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    role_name: { type: 'string', description: 'Name of the sub-agent (e.g., TargetScraper, DeepSearcher)' },
+                    task_instruction: { type: 'string', description: 'Comprehensive strict instructions for the sub-agent.' }
+                },
+                required: ['role_name', 'task_instruction']
+            },
+            execute: async (args: { role_name: string, task_instruction: string }) => {
+                if (!this.activeCallbacks) return "Error: UI hooks not wired.";
+                
+                // Spawn the child agent
+                const sub = new SaxAgent(this.provider, this.apiKey, this.model, this.baseURL, true, args.role_name);
+                let finalResult = '';
+                
+                this.activeCallbacks.onStatus(`[${args.role_name}] 🚀 Started sub-process...`);
+                
+                await sub.run(
+                    args.task_instruction,
+                    (role: string, content: string) => {
+                        if (role === 'assistant' && typeof content === 'string') {
+                            finalResult += content;
+                        }
+                    },
+                    (status: string) => this.activeCallbacks.onStatus(`[${args.role_name}] ${status}`),
+                    (name: string, targs: any) => {
+                        this.activeCallbacks.onToolUse(`[${args.role_name}] ${name}`, targs);
+                    },
+                    (inT: number, outT: number) => this.activeCallbacks.onUsage(inT, outT),
+                    async () => true // Subagents auto-approve standard tasks
+                );
+                
+                return `Sub-agent ${args.role_name} has completed the task. Result:\n${finalResult}`;
+            }
+        });
+    }
+
     this.rebuildClient();
   }
 
@@ -126,10 +175,30 @@ export class SaxAgent {
       } catch (e) { return ['qwen2.5-coder:7b', 'llama3.3']; }
     } else if (this.provider === 'anthropic') {
       return ['claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'claude-3-opus-latest'];
-    } else if (this.provider === 'openai') {
-        return ['gpt-4o', 'gpt-4o-mini', 'o1-preview'];
     }
-    return [PROVIDERS[this.provider]?.defaultModel || 'claude-3-5-sonnet-latest'];
+    
+    // For OpenAI-compatible providers like Kilocode, DeepSeek, etc.
+    try {
+      const resp = await fetch(`${this.baseURL}/models`, {
+          headers: { 'Authorization': `Bearer ${this.apiKey}` }
+      });
+      if (resp.ok) {
+          const data: any = await resp.json();
+          if (data.data && Array.isArray(data.data)) {
+              return data.data.map((m: any) => m.id);
+          }
+      }
+    } catch (e) {}
+
+    // Fallbacks if fetch fails
+    const fallbacks: Record<string, string[]> = {
+        'kilocode': ['qwen3-coder-next:cloud', 'claude-3-5-sonnet-latest', 'deepseek-v3:cloud'],
+        'openai': ['gpt-4o', 'gpt-4o-mini', 'o1-preview'],
+        'deepseek': ['deepseek-chat', 'deepseek-reasoner'],
+        'gemini': ['gemini-1.5-pro', 'gemini-1.5-flash']
+    };
+
+    return fallbacks[this.provider] || [PROVIDERS[this.provider]?.defaultModel || 'claude-3-5-sonnet-latest'];
   }
 
   async run(
@@ -141,8 +210,10 @@ export class SaxAgent {
     onApproval: (name: string, args: any) => Promise<boolean>,
     displayPrompt?: string
   ) {
+    this.activeCallbacks = { onMessage, onStatus, onToolUse, onUsage, onApproval };
     this.messageHistory.push({ role: 'user', content: prompt });
-    onMessage('user', displayPrompt || prompt);
+    if (!this.isSubAgent) onMessage('user', displayPrompt || prompt);
+
     let isFinished = false;
     let totalInputTokens = 0; let totalOutputTokens = 0;
     while (!isFinished) {
